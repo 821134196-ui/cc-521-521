@@ -1,0 +1,15 @@
+{
+  "name": "hotel-extra-bed",
+  "version": "1.0.0",
+  "description": "酒店加床管理：房型容量/库存派单/住客确认/撤床回收结算（SQLite + 本地照片 + 模拟房账）",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "reset": "node src/server.js --reset",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

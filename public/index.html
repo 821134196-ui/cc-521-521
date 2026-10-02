@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>酒店加床管理</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">🛏️</span>
+      <div>
+        <h1>酒店加床管理</h1>
+        <p>房型容量 · 床具库存 · 派单配送 · 回收结算</p>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="rooms">房态列表</button>
+      <button class="tab" data-view="dispatch">配送派单</button>
+      <button class="tab" data-view="checkout">退房回收</button>
+    </nav>
+  </header>
+
+  <main id="app">
+    <!-- 房态 -->
+    <section id="view-rooms" class="view active">
+      <div class="stockbar" id="stockbar"></div>
+      <div id="rooms-grid" class="grid"></div>
+
+      <div class="modal-backdrop" id="apply-modal" hidden>
+        <div class="modal">
+          <h2>接受加床申请 · <span id="apply-room-no"></span></h2>
+          <p class="muted" id="apply-room-meta"></p>
+          <form id="apply-form">
+            <input type="hidden" name="room_id" />
+            <label>加床数量
+              <input type="number" name="beds" value="1" min="1" required />
+            </label>
+            <label>计划夜数
+              <input type="number" name="planned_nights" value="2" min="1" required />
+            </label>
+            <label>经办前台
+              <select name="operator" id="apply-operator"></select>
+            </label>
+            <div class="quote" id="apply-quote"></div>
+            <div class="modal-actions">
+              <button type="button" class="btn ghost" data-close>取消</button>
+              <button type="submit" class="btn gold">提交申请</button>
+            </div>
+            <div class="result" id="apply-result" role="status"></div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- 配送 -->
+    <section id="view-dispatch" class="view">
+      <div class="two-col">
+        <div>
+          <h2 class="section-title">待派 / 配送单</h2>
+          <div id="orders-list" class="list"></div>
+        </div>
+        <div>
+          <h2 class="section-title">单据明细</h2>
+          <div id="order-detail" class="panel"><p class="muted">从左侧选择一张配送单。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 退房 -->
+    <section id="view-checkout" class="view">
+      <div class="two-col">
+        <div>
+          <h2 class="section-title">待回收（已确认加床单）</h2>
+          <div id="checkout-list" class="list"></div>
+        </div>
+        <div>
+          <h2 class="section-title">借出 ↔ 回收对照</h2>
+          <div id="checkout-detail" class="panel"><p class="muted">从左侧选择一张单据逐件核对。</p></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
