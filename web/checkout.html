@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>退房结算 · 酒店加床管理</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="mark"></span>酒店加床管理</div>
+  <nav>
+    <a href="index.html">房态总览</a>
+    <a href="delivery.html">配送派单</a>
+    <a href="checkout.html" class="active">退房结算</a>
+  </nav>
+</header>
+
+<main>
+  <h1>退房回收与结算</h1>
+  <p class="subtitle">对照借出与回收逐件清点；损坏与缺件必须填写原因并当场计入房账，漏检任意布草不能结算。</p>
+
+  <div class="row" style="margin-bottom:10px">
+    <div style="flex:0;min-width:200px">
+      <label>当前操作角色</label>
+      <select id="role">
+        <option value="front_desk">前台（可审批免除费用）</option>
+        <option value="attendant">房务员（仅清点回收，不能免除费用）</option>
+      </select>
+    </div>
+    <div style="flex:0">
+      <label>&nbsp;</label>
+      <button class="ghost" onclick="loadAll()">刷新</button>
+    </div>
+  </div>
+
+  <div class="section-title">待退房回收</div>
+  <div id="active"></div>
+
+  <div class="section-title">历史结算</div>
+  <div id="history"></div>
+</main>
+
+<script src="common.js"></script>
+<script>
+const TYPE_LABEL = { frame: "折叠床架", bedding: "被褥", pillow: "枕头" };
+const STATE_LABEL = { ok: "完好", damaged: "损坏", missing: "缺失" };
+const DAMAGE_PRICE = { frame: 80000, bedding: 20000, pillow: 8000 };
+const MISSING_PRICE = { frame: 120000, bedding: 30000, pillow: 12000 };
+
+let detailsCache = {};
+
+async function loadAll() {
+  const { deliveries } = await api("/api/deliveries");
+  const activeList = deliveries.filter((d) => ["claimed", "delivered"].includes(d.status));
+  const doneList = deliveries.filter((d) => d.status === "recovered");
+
+  const activeDetails = await Promise.all(activeList.map((d) => api(`/api/deliveries/${d.id}`)));
+  detailsCache = {};
+  activeDetails.forEach((d) => { detailsCache[d.delivery.id] = d; });
+
+  const box = document.getElementById("active");
+  if (!activeDetails.length) {
+    box.innerHTML = '<div class="card muted">没有待回收的配送单。</div>';
+  } else {
+    box.innerHTML = activeDetails.map(renderRecover).join("");
+    if (location.hash) {
+      const el = document.querySelector(location.hash);
+      if (el) el.scrollIntoView({ behavior: "smooth" });
+    }
+  }
+
+  const doneDetails = await Promise.all(doneList.map((d) => api(`/api/deliveries/${d.id}`)));
+  document.getElementById("history").innerHTML = doneDetails.length
+    ? '<div class="grid">' + doneDetails.map(renderDone).join("") + "</div>"
+    : '<div class="card muted">暂无历史结算。</div>';
+}
+
+function itemLine(did, kind, rowId, sku, defaultState) {
+  const price = (state) =>
+    state === "damaged" ? DAMAGE_PRICE[kind] : state === "missing" ? MISSING_PRICE[kind] : 0;
+  return `
+  <div class="item-line" data-kind="${kind}" data-id="${rowId}" data-sku="${sku}">
+    <span class="sku">${sku}</span>
+    <div class="state-pick">
+      <label><input type="radio" name="st-${did}-${kind}-${rowId}" value="ok" checked
+              onchange="onStateChange(${did})"><span>完好</span></label>
+      <label><input type="radio" name="st-${did}-${kind}-${rowId}" value="damaged"
+              onchange="onStateChange(${did})"><span>损坏</span></label>
+      <label><input type="radio" name="st-${did}-${kind}-${rowId}" value="missing"
+              onchange="onStateChange(${did})"><span>缺失</span></label>
+    </div>
+    <input class="reason" type="text" placeholder="损坏/缺件原因（必填）" style="display:none">
+    <span class="muted fee-hint"></span>
+  </div>`;
+}
+
+function renderRecover(d) {
+  const dl = d.delivery, q = d.request;
+  const frames = d.frames
+    .filter((f) => f.status === "allocated")
+    .map((f) => itemLine(dl.id, "frame", f.id, f.frame_sku)).join("");
+  const linenOf = (t) => d.linens
+    .filter((l) => l.item_type === t && !l.returned_at)
+    .map((l) => itemLine(dl.id, l.item_type, l.id, l.item_sku)).join("");
+
+  const cannotConfirm = q.status !== "confirmed";
+  return `
+  <div class="card" id="d${dl.id}" style="margin-bottom:16px">
+    <div class="room-head">
+      <div><span class="room-no">配送单 #${dl.id}</span>
+        <span class="room-type">房号 ${q.room_no} · 借出 ${q.guests_to_add} 套（床架/被褥/枕头各 ${q.guests_to_add}）</span></div>
+      ${badge(dl.status)}
+    </div>
+
+    ${cannotConfirm ? '<div class="alert alert-warn">住客尚未确认计费，请先在配送页完成送达与住客确认；也可先做实物清点。</div>' : ""}
+
+    <div class="kind-group">
+      <h4>床架（借出 ${d.frames.length}）</h4>${frames || '<div class="muted">无待回收床架</div>'}
+    </div>
+    <div class="kind-group">
+      <h4>被褥（借出 ${d.linens.filter(l=>l.item_type==="bedding").length}）</h4>
+      ${linenOf("bedding") || '<div class="muted">无待回收被褥</div>'}
+    </div>
+    <div class="kind-group">
+      <h4>枕头（借出 ${d.linens.filter(l=>l.item_type==="pillow").length}）</h4>
+      ${linenOf("pillow") || '<div class="muted">无待回收枕头</div>'}
+    </div>
+
+    <label>回收验收照片（逐件铺开展示，可选传）</label>
+    <input type="file" class="photo-input" accept="image/*" multiple style="font-size:13px">
+
+    <div class="total-bar">
+      <div><div class="lbl">本次损坏/缺件赔偿合计</div>
+           <div class="muted" style="color:rgba(255,255,255,.7)">跨夜房费已在住客确认时入账</div></div>
+      <div class="val" id="total-${dl.id}">￥0.00</div>
+    </div>
+
+    <div style="margin-top:12px;display:flex;gap:10px">
+      <button class="gold" onclick="settle(${dl.id})">逐件核对完成 · 结算退房</button>
+    </div>
+  </div>`;
+}
+
+function onStateChange(did) {
+  const card = document.getElementById("d" + did);
+  let total = 0;
+  card.querySelectorAll(".item-line").forEach((line) => {
+    const kind = line.dataset.kind;
+    const picked = line.querySelector("input:checked").value;
+    const reason = line.querySelector(".reason");
+    const hint = line.querySelector(".fee-hint");
+    if (picked === "ok") {
+      reason.style.display = "none";
+      hint.textContent = "";
+    } else {
+      reason.style.display = "";
+      const fee = picked === "damaged" ? DAMAGE_PRICE[kind] : MISSING_PRICE[kind];
+      hint.textContent = `${STATE_LABEL[picked]}赔偿 ${yuan(fee)}`;
+      hint.style.color = picked === "damaged" ? "var(--warn)" : "var(--danger)";
+      total += fee;
+    }
+  });
+  document.getElementById("total-" + did).textContent = yuan(total);
+}
+
+async function settle(did) {
+  const card = document.getElementById("d" + did);
+  const items = [];
+  for (const line of card.querySelectorAll(".item-line")) {
+    const state = line.querySelector("input:checked").value;
+    const note = line.querySelector(".reason").value.trim();
+    if (state !== "ok" && !note) {
+      toast(`${line.dataset.sku} 标记为「${STATE_LABEL[state]}」时必须填写原因`);
+      return;
+    }
+    items.push({ kind: line.dataset.kind, id: Number(line.dataset.id), state, note });
+  }
+
+  const files = [...card.querySelectorAll(".photo-input")[0]?.files || []];
+  const role = document.getElementById("role").value;
+  try {
+    for (const f of files) await uploadPhoto(did, f, "recovery", "退房回收验收");
+    const r = await api(`/api/deliveries/${did}/recover`, {
+      method: "POST", body: { items, role },
+    });
+    const bad = r.charges.filter((c) => c.state !== "ok");
+    const sum = bad.reduce((s, c) => s + c.amount_cents, 0);
+    toast(bad.length
+      ? `结算完成：${bad.length} 件损坏/缺件，赔偿 ${yuan(sum)}，已计入房账`
+      : "结算完成：全部完好回收，无额外费用", true);
+    loadAll();
+  } catch (e) { toast(e.message); }
+}
+
+function uploadPhoto(id, file, stage, note) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const data = reader.result.split(",")[1];
+      const fmt = (file.name.split(".").pop() || "jpg").toLowerCase();
+      try {
+        await api(`/api/deliveries/${id}/photos`, {
+          method: "POST",
+          body: { stage, data, format: fmt === "png" ? "png" : "jpg", note },
+        });
+        resolve();
+      } catch (e) { reject(e); }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const KIND_LABEL_DETAIL = {
+  nightly: "跨夜房费", damage: "损坏赔偿", missing: "缺件赔偿",
+  early_pickup: "提前撤床上门费", adjustment: "调整/退还/免除",
+};
+
+function renderDone(d) {
+  const dl = d.delivery, q = d.request;
+  const returned = [
+    ...d.frames.map((f) => ({ sku: f.frame_sku, kind: "frame", state: f.return_state, note: f.note })),
+    ...d.linens.map((l) => ({ sku: l.item_sku, kind: l.item_type, state: l.return_state, note: l.note })),
+  ];
+  const balance = d.ledger.reduce((s, e) => s + e.amount_cents, 0);
+  const photos = d.photos.filter((p) => p.stage === "recovery");
+
+  const rows = returned.map((r) => {
+    const cls = r.state === "ok" ? "" : r.state === "damaged" ? "pos" : "pos";
+    const fee = r.state === "damaged" ? DAMAGE_PRICE[r.kind]
+              : r.state === "missing" ? MISSING_PRICE[r.kind] : 0;
+    return `<tr>
+      <td>${TYPE_LABEL[r.kind]}</td><td class="sku">${r.sku}</td>
+      <td>${STATE_LABEL[r.state]}</td>
+      <td class="muted">${esc(r.note || "")}</td>
+      <td class="num amount ${cls}">${fee ? yuan(fee) : "—"}</td>
+    </tr>`;
+  }).join("");
+
+  const ledger = d.ledger.map((e) => `
+    <tr>
+      <td>${KIND_LABEL_DETAIL[e.kind] || e.kind}</td>
+      <td class="muted">${esc(e.detail)}</td>
+      <td class="num muted">${e.nights ? e.nights + " 晚" : ""}</td>
+      <td class="num amount ${e.amount_cents < 0 ? "neg" : "pos"}">${yuan(e.amount_cents)}</td>
+      <td class="num">
+        ${(e.kind === "damage" || e.kind === "missing")
+          ? `<button class="small ghost" onclick="waive(${e.id})">申请免除</button>`
+          : ""}
+        <span class="muted">${e.ref || ""}</span>
+      </td>
+    </tr>`).join("");
+
+  return `
+  <div class="card card-wide">
+    <div class="room-head">
+      <div><span class="room-no">配送单 #${dl.id}</span>
+        <span class="room-type">房号 ${q.room_no} · ${q.status === "early_removed" ? "提前撤床" : "退房结算"} · ${dl.recovered_at || ""}</span></div>
+      ${badge(q.status)}
+    </div>
+
+    <div class="section-title">借出 / 回收对照</div>
+    <table>
+      <thead><tr><th>品类</th><th>编号</th><th>回收状态</th><th>缺件/损耗原因</th><th class="num">赔偿</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+
+    ${photos.length ? `<div class="photo-row">${photos.map((p) =>
+      `<img class="photo-thumb" src="/photos/${p.rel_path}" title="${esc(p.note || "")}">`).join("")}</div>` : ""}
+
+    <div class="section-title">房账流水（模拟适配器）</div>
+    <table>
+      <thead><tr><th>项目</th><th>说明</th><th>跨夜</th><th class="num">金额</th><th class="num">操作</th></tr></thead>
+      <tbody>${ledger}</tbody>
+    </table>
+    <div class="total-bar">
+      <div class="lbl">该加床单房账合计</div>
+      <div class="val">${yuan(balance)}</div>
+    </div>
+    ${q.status === "checked_out" && d.quote_history.length ? `
+      <div class="muted" style="margin-top:8px">报价调整记录（原报价已保留）：
+      ${d.quote_history.map((h) =>
+        `${yuan(h.from_cents)} → ${yuan(h.to_cents)}（${esc(h.changed_by)}）`).join("；")}
+      </div>` : ""}
+  </div>`;
+}
+
+async function waive(entryId) {
+  const role = document.getElementById("role").value;
+  if (role !== "front_desk") {
+    toast("房务员无权免除损坏/缺件费用，须由前台审批");
+    return;
+  }
+  const reason = prompt("前台审批：免除原因（将在房账留痕）");
+  if (reason === null) return;
+  try {
+    await api("/api/ledger/waive", {
+      method: "POST",
+      body: { entry_id: entryId, role, operator: "前台", reason },
+    });
+    toast("已免除并在房账生成冲账记录", true);
+    loadAll();
+  } catch (e) { toast(e.message); }
+}
+
+loadAll();
+</script>
+</body>
+</html>

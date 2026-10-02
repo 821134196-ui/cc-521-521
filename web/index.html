@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>房态总览 · 酒店加床管理</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="mark"></span>酒店加床管理</div>
+  <nav>
+    <a href="index.html" class="active">房态总览</a>
+    <a href="delivery.html">配送派单</a>
+    <a href="checkout.html">退房结算</a>
+  </nav>
+</header>
+
+<main>
+  <h1>房态总览</h1>
+  <p class="subtitle">按房型消防核准人数与房间可用床位数受理加床；房态卡片直接显示已加床数量。</p>
+
+  <div class="grid">
+    <div class="card card-wide">
+      <div class="section-title">新建加床申请（前台）</div>
+      <div class="row">
+        <div>
+          <label>房间</label>
+          <select id="f-room"></select>
+        </div>
+        <div>
+          <label>加床（=新增住客）数量</label>
+          <input type="number" id="f-qty" value="1" min="1" max="2">
+        </div>
+        <div>
+          <label>约定退房日期</label>
+          <input type="date" id="f-ends">
+        </div>
+        <div style="flex:0">
+          <button id="f-submit">提交申请</button>
+        </div>
+      </div>
+      <div id="f-hint" class="muted" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <div class="section-title">在住房态</div>
+  <div id="rooms" class="grid"></div>
+
+  <div class="section-title">床具库存</div>
+  <div class="card">
+    <table>
+      <thead><tr><th>品类</th><th class="num">可配送</th><th class="num">在借</th><th class="num">损坏隔离</th><th class="num">报废</th><th class="num">合计</th></tr></thead>
+      <tbody id="inv"></tbody>
+    </table>
+  </div>
+
+  <div class="section-title">加床申请</div>
+  <div class="card">
+    <table>
+      <thead><tr><th>#</th><th>房间</th><th class="num">床数</th><th>状态</th><th>报价（每床/晚）</th><th>退房日</th><th>备注 / 驳回原因</th><th>操作</th></tr></thead>
+      <tbody id="reqs"></tbody>
+    </table>
+  </div>
+</main>
+
+<script src="common.js"></script>
+<script>
+const TYPE_LABEL = { frame: "折叠床架", bedding: "被褥", pillow: "枕头" };
+let roomsCache = [];
+
+function tomorrow() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+async function loadRooms() {
+  const { rooms } = await api("/api/rooms");
+  roomsCache = rooms;
+  const sel = document.getElementById("f-room");
+  sel.innerHTML = rooms.map((r) =>
+    `<option value="${r.room_no}">${r.room_no} ${esc(r.type_name)}（已住 ${r.base_guests}/${r.fire_capacity} 人，可加床位 ${r.bed_space}）</option>`
+  ).join("");
+  document.getElementById("f-ends").value = tomorrow();
+  updateHint();
+
+  document.getElementById("rooms").innerHTML = rooms.map((r) => {
+    const over = r.over_fire;
+    return `
+    <div class="card">
+      <div class="room-head">
+        <div><span class="room-no">${r.room_no}</span> <span class="room-type">${esc(r.type_name)}</span></div>
+        ${over ? '<span class="badge badge-red">超员</span>' : ""}
+      </div>
+      <div class="metrics">
+        <div class="metric">在住人数<b class="${over ? "danger" : ""}">${r.current_guests} / ${r.fire_capacity}</b></div>
+        <div class="metric">已加床数量<b class="${r.extra_beds ? "gold" : ""}">${r.extra_beds} 张</b></div>
+        <div class="metric">剩余床位<b>${Math.max(0, r.bed_space - r.extra_beds)}</b></div>
+        <div class="metric">挂牌价<b>${yuan(r.rack_rate_cents)}</b></div>
+      </div>
+      ${over ? '<div class="alert alert-danger">当前人数已超过消防核准人数，请立即处理</div>'
+             : `<div class="muted">消防核准 ${r.fire_capacity} 人 · 房间最多 ${r.bed_space} 张折叠床</div>`}
+    </div>`;
+  }).join("");
+}
+
+function updateHint() {
+  const r = roomsCache[document.getElementById("f-room").selectedIndex];
+  if (!r) return;
+  const qty = Number(document.getElementById("f-qty").value || 0);
+  const futureGuests = r.base_guests + r.extra_beds + qty;
+  const futureBeds = r.extra_beds + qty;
+  const msgs = [];
+  if (futureGuests > r.fire_capacity)
+    msgs.push(`<span style="color:var(--danger)">⚠ 入住人数超限：核准 ${r.fire_capacity} 人，叠加后 ${futureGuests} 人，提交将被拒绝</span>`);
+  if (futureBeds > r.bed_space)
+    msgs.push(`<span style="color:var(--danger)">⚠ 房间空间不足：最多 ${r.bed_space} 张折叠床</span>`);
+  if (!msgs.length)
+    msgs.push(`<span style="color:var(--ok)">可受理：叠加后 ${futureGuests}/${r.fire_capacity} 人，占用 ${futureBeds}/${r.bed_space} 床位，预计 ￥${(r.rack_rate_cents * qty / 100).toFixed(2)}/晚</span>`);
+  document.getElementById("f-hint").innerHTML = msgs.join("<br>");
+}
+
+async function loadInventory() {
+  const { summary } = await api("/api/inventory");
+  document.getElementById("inv").innerHTML = summary.map((s) =>
+    `<tr><td>${TYPE_LABEL[s.item_type] || s.item_type}</td>
+      <td class="num"><b>${s.ready}</b></td>
+      <td class="num">${s.in_use}</td>
+      <td class="num">${s.damaged ? `<span style="color:var(--warn)">${s.damaged}</span>` : 0}</td>
+      <td class="num">${s.retired}</td>
+      <td class="num muted">${s.total}</td></tr>`).join("");
+}
+
+async function loadRequests() {
+  const { requests } = await api("/api/requests");
+  document.getElementById("reqs").innerHTML = requests.map((q) => {
+    let actions = "";
+    if (q.status === "submitted") {
+      actions = `
+        <button class="small gold" onclick="adjustQuote(${q.id}, ${q.quoted_cents})">改价</button>
+        <button class="small" onclick="assign(${q.id})">派单</button>
+        <button class="small danger" onclick="reject(${q.id})">驳回</button>`;
+    } else if (q.status === "confirmed") {
+      actions = `<button class="small ghost" onclick="extendStay(${q.id})">跨夜续住</button>`;
+    }
+    return `<tr>
+      <td>#${q.id}</td><td>${q.room_no}</td><td class="num">${q.guests_to_add}</td>
+      <td>${badge(q.status)}</td>
+      <td>${yuan(q.quoted_cents)}${q.quoted_cents !== q.list_price_cents ? `<span class="muted">（挂牌 ${yuan(q.list_price_cents)}）</span>` : ""}</td>
+      <td>${q.ends_on || ""}</td>
+      <td class="muted">${esc(q.reject_reason || "")}</td>
+      <td><div class="pill-row">${actions}</div></td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="8" class="muted">暂无申请</td></tr>';
+}
+
+async function assign(id) {
+  try {
+    const r = await api(`/api/requests/${id}/assign`, { method: "POST", body: {} });
+    toast(`已锁定床架与布草，配送单 #${r.delivery_id} 已生成，可去配送页认领`, true);
+    refreshAll();
+  } catch (e) { toast(e.message); }
+}
+function reject(id) {
+  const reason = prompt("驳回原因（如：入住人数超限 / 房间空间不足）");
+  if (reason === null) return;
+  runWithToast(api(`/api/requests/${id}/reject`, { method: "POST", body: { reason } }),
+    "已驳回", refreshAll).catch(() => {});
+}
+function adjustQuote(id, oldCents) {
+  const v = prompt(`原报价每床每晚 ￥${(oldCents/100).toFixed(2)}，输入新价（元，保留两位）：`);
+  if (v === null) return;
+  const cents = Math.round(Number(v) * 100);
+  if (!(cents >= 0)) return toast("价格无效");
+  runWithToast(api(`/api/requests/${id}/quote`, { method: "POST",
+      body: { new_rate_cents: cents, role: "front_desk", operator: "前台" } }),
+    "价格已调整，原报价已留痕", refreshAll).catch(() => {});
+}
+function extendStay(id) {
+  const v = prompt("输入新的退房日期（YYYY-MM-DD）：", tomorrow());
+  if (!v) return;
+  runWithToast(api(`/api/requests/${id}/extend`, { method: "POST", body: { new_ends_on: v } })
+    .then((r) => { toast(`已续住 ${r.extra_nights} 晚，加收 ${yuan(r.amount_cents)}（按原报价）`, true); }),
+    "", refreshAll).catch(() => {});
+}
+
+function refreshAll() { loadRooms(); loadInventory(); loadRequests(); }
+
+document.getElementById("f-room").addEventListener("change", updateHint);
+document.getElementById("f-qty").addEventListener("input", updateHint);
+document.getElementById("f-submit").addEventListener("click", async () => {
+  const body = {
+    room_no: document.getElementById("f-room").value,
+    guests_to_add: Number(document.getElementById("f-qty").value),
+    ends_on: document.getElementById("f-ends").value,
+  };
+  try {
+    const r = await api("/api/requests", { method: "POST", body });
+    toast(`申请 #${r.request_id} 已受理，等待派单`, true);
+    refreshAll();
+  } catch (e) { toast(e.message); }
+});
+
+refreshAll();
+</script>
+</body>
+</html>

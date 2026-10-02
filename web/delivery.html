@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>配送派单 · 酒店加床管理</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="mark"></span>酒店加床管理</div>
+  <nav>
+    <a href="index.html">房态总览</a>
+    <a href="delivery.html" class="active">配送派单</a>
+    <a href="checkout.html">退房结算</a>
+  </nav>
+</header>
+
+<main>
+  <h1>配送派单</h1>
+  <p class="subtitle">床架与布草分项核对；两名房务员同时认领同一配送单只有一人成功。送达后拍照留档并请住客确认计费。</p>
+
+  <div class="row" style="margin-bottom:14px">
+    <div style="flex:0">
+      <label>当前房务员</label>
+      <input type="text" id="attendant" value="小张" style="min-width:140px">
+    </div>
+    <div style="flex:0">
+      <label>&nbsp;</label>
+      <button class="ghost" onclick="loadAll()">刷新</button>
+    </div>
+  </div>
+
+  <div class="section-title">配送单</div>
+  <div id="list" class="grid"></div>
+</main>
+
+<script src="common.js"></script>
+<script>
+const TYPE_LABEL = { frame: "折叠床架", bedding: "被褥", pillow: "枕头" };
+
+async function loadAll() {
+  const { deliveries } = await api("/api/deliveries");
+  const details = await Promise.all(deliveries.map((d) => api(`/api/deliveries/${d.id}`)));
+  const box = document.getElementById("list");
+  if (!deliveries.length) {
+    box.innerHTML = '<div class="card card-wide muted">暂无配送单，可先在房态总览提交并派发申请。</div>';
+    return;
+  }
+  box.innerHTML = details.map(renderDelivery).join("");
+}
+
+function renderDelivery(d) {
+  const dl = d.delivery, q = d.request;
+  const frames = d.frames.map((f) =>
+    `<div class="item-line">
+       <span class="sku">${f.frame_sku}</span>
+       <label style="margin:0;display:flex;align-items:center;gap:6px">
+         <input type="checkbox" class="chk" data-sku="${f.frame_sku}" checked>
+         床架完好、已搭好</label>
+       ${dl.status==='claimed' ? `<button class="small danger" onclick="replaceItem(${dl.id},'${f.frame_sku}')">床架损坏·改配</button>` : ''}
+     </div>`).join("");
+
+  const byType = (t) => d.linens.filter((l) => l.item_type === t);
+  const linenBlock = (t, title) => `
+    <div class="kind-group">
+      <h4>${title} × ${byType(t).length}</h4>
+      ${byType(t).map((l) => `
+        <div class="item-line">
+          <span class="sku">${l.item_sku}</span>
+          <label style="margin:0;display:flex;align-items:center;gap:6px">
+            <input type="checkbox" class="chk" data-sku="${l.item_sku}" checked>
+            已配齐、洁净无破损</label>
+          ${dl.status==='claimed' ? `<button class="small danger" onclick="replaceItem(${dl.id},'${l.item_sku}')">损坏·改配</button>` : ''}
+        </div>`).join("")}
+    </div>`;
+
+  let actions = "";
+  if (dl.status === "pending") {
+    actions = `<button class="gold" onclick="claim(${dl.id})">认领配送单</button>`;
+  } else if (dl.status === "claimed") {
+    actions = `
+      <div class="alert alert-warn">请按上方清单逐项核对床架与布草，齐全后登记送达。</div>
+      <div class="row">
+        <div style="flex:0"><label>送达日期</label><input type="date" class="delivered-on"></div>
+        <div style="flex:0;align-self:flex-end">
+          <button onclick="markDelivered(${dl.id})">登记送达并上传验收照</button>
+        </div>
+      </div>
+      <input type="file" class="photo-input" accept="image/*" capture="environment"
+             style="margin-top:8px;max-width:320px;font-size:13px">`;
+  } else if (dl.status === "delivered" && q.status === "delivered") {
+    actions = `
+      <div class="alert alert-ok">已于 ${q.delivered_on} 送达，请住客确认后按跨夜计入房账。</div>
+      <button class="gold" onclick="guestConfirm(${dl.id})">住客确认 · 计入房账</button>`;
+  } else if (q.status === "confirmed") {
+    actions = `
+      <div class="alert alert-ok">住客已确认，约定退房 ${q.ends_on}。可在退房页办理回收，或提前撤床。</div>
+      <button class="ghost" onclick="earlyRemove(${dl.id})">提前撤床</button>
+      <a class="btn ghost" href="checkout.html#d${dl.id}">去退房回收 →</a>`;
+  } else {
+    actions = `<div class="muted">已回收，流程结束。</div>`;
+  }
+
+  const photos = d.photos.filter((p) => p.stage === "delivery");
+  return `
+  <div class="card card-wide" id="d${dl.id}">
+    <div class="room-head">
+      <div><span class="room-no">配送单 #${dl.id}</span>
+        <span class="room-type">房号 ${q.room_no} · 加床 ${q.guests_to_add} 张</span></div>
+      ${badge(dl.status)}
+    </div>
+    <div class="pill-row" style="margin-top:8px">
+      <span class="muted">认领房务员：${esc(dl.claimed_by || "—")}</span>
+      <span class="muted">认领时间：${dl.claimed_at || "—"}</span>
+      <span class="muted">送达：${q.delivered_on || "—"}</span>
+      <span class="muted">每床每晚报价：<b style="color:var(--gold-500)">${yuan(q.quoted_cents)}</b></span>
+    </div>
+
+    <div class="kind-group">
+      <h4>折叠床架 × ${d.frames.length}</h4>${frames}
+    </div>
+    ${linenBlock("bedding", "被褥")}
+    ${linenBlock("pillow", "枕头")}
+
+    <div class="photo-row">
+      ${photos.map((p) => `<img class="photo-thumb" src="/photos/${p.rel_path}" title="${esc(p.note || "")}">`).join("")}
+    </div>
+    <div style="margin-top:12px">${actions}</div>
+  </div>`;
+}
+
+function attendant() { return document.getElementById("attendant").value || "房务员"; }
+
+async function replaceItem(id, sku) {
+  const note = prompt(`物品 ${sku} 损坏情况说明（坏件隔离，自动从库存改配，不向客人收费）：`);
+  if (note === null) return;
+  try {
+    const r = await api(`/api/deliveries/${id}/replace-item`, {
+      method: "POST", body: { sku, note: note || "配送前发现损坏" },
+    });
+    toast(`坏件 ${r.bad_sku} 已隔离，改配 ${r.replacement}`, true);
+    loadAll();
+  } catch (e) { toast(e.message); }
+}
+
+async function claim(id) {
+  try {
+    await api(`/api/deliveries/${id}/claim`, { method: "POST", body: { attendant: attendant() } });
+    toast(`已由 ${attendant()} 认领配送单 #${id}`, true);
+    loadAll();
+  } catch (e) { toast(e.message); }
+}
+
+async function markDelivered(id) {
+  const card = document.getElementById("d" + id);
+  const unchecked = [...card.querySelectorAll(".chk:not(:checked)")];
+  if (unchecked.length) {
+    toast("仍有床架/布草未勾选项，核对齐全后才能登记送达（如有损坏请先报库管隔离）");
+    return;
+  }
+  const deliveredOn = card.querySelector(".delivered-on").value || new Date().toISOString().slice(0,10);
+  const file = card.querySelector(".photo-input").files[0];
+  try {
+    if (file) await uploadPhoto(id, file, "delivery", "送达验收：床架/被褥/枕头齐套");
+    await api(`/api/deliveries/${id}/delivered`, { method: "POST", body: { delivered_on: deliveredOn } });
+    toast("已登记送达，等待住客确认", true);
+    loadAll();
+  } catch (e) { toast(e.message); }
+}
+
+function uploadPhoto(id, file, stage, note) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const data = reader.result.split(",")[1];
+      const fmt = (file.name.split(".").pop() || "jpg").toLowerCase();
+      try {
+        const r = await api(`/api/deliveries/${id}/photos`, {
+          method: "POST",
+          body: { stage, data, format: fmt === "png" ? "png" : "jpg", note },
+        });
+        resolve(r);
+      } catch (e) { reject(e); }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function guestConfirm(id) {
+  try {
+    const r = await api(`/api/deliveries/${id}/confirm`, { method: "POST", body: {} });
+    toast(`住客已确认：跨夜 ${r.nights} 晚，房账计入 ${yuan(r.amount_cents)}（凭证 ${r.ref}）`, true);
+    loadAll();
+  } catch (e) { toast(e.message); }
+}
+
+async function earlyRemove(id) {
+  const v = prompt("提前撤床日期（YYYY-MM-DD，默认今天）：", new Date().toISOString().slice(0,10));
+  if (v === null) return;
+  try {
+    const r = await api(`/api/deliveries/${id}/early-remove`, {
+      method: "POST", body: { removed_on: v || undefined },
+    });
+    toast(`已撤床：退还未使用晚 ${yuan(r.refund_cents)}，收取上门费 ${yuan(r.fee_cents)}`, true);
+    loadAll();
+  } catch (e) { toast(e.message); }
+}
+
+// 设置送达日期默认值
+const obs = new MutationObserver(() => {
+  document.querySelectorAll(".delivered-on").forEach((el) => {
+    if (!el.value) el.value = new Date().toISOString().slice(0, 10);
+  });
+});
+obs.observe(document.body, { childList: true, subtree: true });
+
+loadAll();
+</script>
+</body>
+</html>
